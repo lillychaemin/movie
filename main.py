@@ -6,6 +6,7 @@
   (Streamlit Cloud > Settings > Secrets 에 KOBIS_KEY = "발급받은키" 형태로 등록)
 """
 
+import random  # '가볍게 아무거나' 기분일 때 랜덤 추천용 (파이썬 내장 모듈)
 import streamlit as st
 import pandas as pd
 import requests
@@ -176,3 +177,65 @@ st.subheader("📊 관객수 상위 5편")
 
 top5 = df.sort_values("관객수", ascending=False).head(5).set_index("영화명")
 st.bar_chart(top5["관객수"])
+
+# -----------------------------
+# 9. 오늘의 기분에 따라 '지금 상영 중인 영화'(=어제 박스오피스에 오른 영화) 추천
+#
+#    ※ KOBIS 일별 박스오피스 API에는 장르 정보가 없어서(문서에 없는 필드는
+#      임의로 만들어 쓰지 않았습니다), 장르 대신 실제로 제공되는 지표
+#      (순위, 관객수, 스크린수, 누적관객수)의 '패턴'을 기분과 연결했습니다.
+#      예: 스크린수는 적은데 관객수 비율이 높다 → 입소문으로 사랑받는 영화
+# -----------------------------
+st.divider()
+st.subheader("🎭 오늘 기분에 맞는 영화 추천")
+st.caption("아래 목록은 어제 박스오피스에 오른, 즉 지금 상영 중인 영화들입니다.")
+
+mood = st.selectbox(
+    "오늘 기분이 어떠세요?",
+    [
+        "신나고 활기찬 기분이에요",
+        "잔잔하게 힐링하고 싶어요",
+        "다 같이 볼 대중적인 영화가 필요해요",
+        "이미 검증된 명작이 좋아요",
+        "그냥 가볍게 아무거나 보고 싶어요",
+    ],
+)
+
+if st.button("추천 받기"):
+    # 스크린수가 0이면 나누기 오류가 나므로, 0인 경우는 계산에서 제외
+    df_calc = df[df["스크린수"] > 0].copy()
+
+    if mood == "신나고 활기찬 기분이에요":
+        # 어제 관객수가 가장 많은, 지금 가장 화제인 영화
+        pick = df_calc.sort_values("관객수", ascending=False).iloc[0]
+        reason = "어제 관객수가 가장 많아서 지금 가장 화제가 되고 있는 영화예요."
+
+    elif mood == "잔잔하게 힐링하고 싶어요":
+        # 스크린수 대비 관객수 비율(회전율)이 높은 영화 = 큰 규모는 아니지만 입소문으로 사랑받는 영화
+        df_calc["좌석회전율"] = df_calc["관객수"] / df_calc["스크린수"]
+        pick = df_calc.sort_values("좌석회전율", ascending=False).iloc[0]
+        reason = "상영관 수 대비 관객 비율이 높아서, 입소문으로 잔잔하게 사랑받고 있는 영화예요."
+
+    elif mood == "다 같이 볼 대중적인 영화가 필요해요":
+        # 스크린수가 가장 많은 영화 = 가장 대중적으로 넓게 상영 중인 영화
+        pick = df_calc.sort_values("스크린수", ascending=False).iloc[0]
+        reason = "상영 스크린수가 가장 많아서, 어디서든 쉽게 함께 볼 수 있는 영화예요."
+
+    elif mood == "이미 검증된 명작이 좋아요":
+        # 누적관객수가 가장 많은 영화 = 오랫동안 많은 사람이 본 영화
+        pick = df_calc.sort_values("누적관객", ascending=False).iloc[0]
+        reason = "누적 관객수가 가장 많아서, 이미 많은 사람들에게 검증된 영화예요."
+
+    else:  # 그냥 가볍게 아무거나 보고 싶어요
+        # 매번 누를 때마다 무작위로 한 편 선택
+        pick = df_calc.sample(n=1).iloc[0]
+        reason = "오늘의 기분을 위해 무작위로 골라본 영화예요."
+
+    st.success(f"오늘의 추천 영화: **{pick['영화명']}**")
+    st.write(reason)
+
+    r_col1, r_col2, r_col3, r_col4 = st.columns(4)
+    r_col1.metric("순위", f"{int(pick['순위'])}위")
+    r_col2.metric("어제 관객수", f"{int(pick['관객수']):,}명")
+    r_col3.metric("누적 관객수", f"{int(pick['누적관객']):,}명")
+    r_col4.metric("스크린수", f"{int(pick['스크린수']):,}개")
