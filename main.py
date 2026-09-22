@@ -20,6 +20,10 @@ st.set_page_config(page_title="어제의 박스오피스", page_icon="🎬", lay
 
 API_URL = "https://www.kobis.or.kr/kobisopenapi/webservice/rest/boxoffice/searchDailyBoxOfficeList.json"
 
+# 배우 정보·출연작 추천에 사용할 TMDb(The Movie Database) API 주소
+# - TMDb 인증키도 코드에 쓰지 않고 st.secrets["TMDB_KEY"]에서 불러옵니다.
+TMDB_API_URL = "https://api.themoviedb.org/3"
+
 
 # -----------------------------
 # 1. '어제' 날짜를 한국 시간(KST) 기준으로 계산
@@ -104,6 +108,75 @@ def fetch_box_office(target_dt: str):
         )
 
     return movie_list, None
+
+
+# -----------------------------
+# 3-2. TMDb API 도우미 함수들 (배우 출연작 추천 기능용)
+#      - 모든 함수는 실패하면 None 또는 빈 리스트를 반환해서,
+#        호출하는 쪽에서 앱이 멈추지 않고 안내 메시지를 보여줄 수 있게 합니다.
+# -----------------------------
+def tmdb_search_movie(title: str, api_key: str):
+    """영화 한글 제목으로 TMDb에서 영화를 검색해서, 가장 가까운 결과 1건을 반환"""
+    try:
+        resp = requests.get(
+            f"{TMDB_API_URL}/search/movie",
+            params={"api_key": api_key, "query": title, "language": "ko-KR"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        return results[0] if results else None
+    except requests.exceptions.RequestException:
+        return None
+
+
+def tmdb_get_movie_cast(movie_id: int, api_key: str, limit: int = 6):
+    """TMDb 영화 id로 출연 배우 목록(상위 limit명)을 반환"""
+    try:
+        resp = requests.get(
+            f"{TMDB_API_URL}/movie/{movie_id}/credits",
+            params={"api_key": api_key, "language": "ko-KR"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json().get("cast", [])[:limit]
+    except requests.exceptions.RequestException:
+        return []
+
+
+def tmdb_get_person_movie_credits(person_id: int, api_key: str, limit: int = 6):
+    """TMDb 배우 id로 그 배우의 다른 출연작을 인기도 순으로 반환"""
+    try:
+        resp = requests.get(
+            f"{TMDB_API_URL}/person/{person_id}/movie_credits",
+            params={"api_key": api_key, "language": "ko-KR"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        cast = resp.json().get("cast", [])
+        cast_sorted = sorted(cast, key=lambda m: m.get("popularity", 0), reverse=True)
+        return cast_sorted[:limit]
+    except requests.exceptions.RequestException:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def build_actor_pool(movie_titles: tuple, api_key: str) -> dict:
+    """현재 상영작 목록(영화 제목들)을 TMDb에서 검색해서,
+    등장하는 배우 이름 -> TMDb 배우 id 매핑을 만들어 반환.
+    같은 결과를 1시간 동안 캐시해서, 매번 새로고침해도 API를 너무 많이 부르지 않도록 함."""
+    actor_map = {}
+    for title in movie_titles:
+        movie = tmdb_search_movie(title, api_key)
+        if not movie:
+            continue  # TMDb에서 못 찾은 영화는 건너뜀
+        cast = tmdb_get_movie_cast(movie["id"], api_key)
+        for actor in cast:
+            name = actor.get("name")
+            actor_id = actor.get("id")
+            if name and actor_id and name not in actor_map:
+                actor_map[name] = actor_id
+    return actor_map
 
 
 # -----------------------------
@@ -239,3 +312,60 @@ if st.button("추천 받기"):
     r_col2.metric("어제 관객수", f"{int(pick['관객수']):,}명")
     r_col3.metric("누적 관객수", f"{int(pick['누적관객']):,}명")
     r_col4.metric("스크린수", f"{int(pick['스크린수']):,}개")
+
+# -----------------------------
+# 10. 현재 상영작에 나온 배우 선택 → 그 배우의 다른 출연작 추천
+#     - KOBIS API에는 배우 정보가 없어서, 배우 검색·출연작 조회는
+#       TMDb(The Movie Database) API를 추가로 사용합니다.
+#     - TMDb 인증키도 코드에 쓰지 않고 st.secrets["TMDB_KEY"]에서 불러옵니다.
+#       (Streamlit Cloud Secrets에 TMDB_KEY = "TMDb에서 발급받은 키" 로 등록)
+# -----------------------------
+st.divider()
+st.subheader("🧑‍🎤 배우로 다른 영화 찾기")
+st.caption("현재 상영작에 나온 배우를 고르면, TMDb 데이터로 그 배우의 다른 출연작을 추천합니다.")
+
+try:
+    tmdb_api_key = st.secrets["TMDB_KEY"]
+except (KeyError, FileNotFoundError):
+    tmdb_api_key = None
+    st.warning(
+        "TMDb 인증키(TMDB_KEY)가 등록되어 있지 않아 이 기능을 사용할 수 없습니다. "
+        "Streamlit Cloud의 Settings > Secrets에 TMDB_KEY를 추가해 주세요."
+    )
+
+if tmdb_api_key:
+    # 현재 상영작(어제 박스오피스) 제목들로 배우 목록을 만듭니다.
+    movie_titles = tuple(df["영화명"].tolist())
+
+    with st.spinner("현재 상영작의 배우 정보를 불러오는 중..."):
+        actor_map = build_actor_pool(movie_titles, tmdb_api_key)
+
+    if not actor_map:
+        st.info(
+            "TMDb에서 현재 상영작의 배우 정보를 찾지 못했습니다. "
+            "TMDb 인증키가 올바른지, 또는 영화 제목이 TMDb 검색 결과와 다른 건 아닌지 확인해 주세요."
+        )
+    else:
+        selected_actor = st.selectbox("배우를 선택하세요", sorted(actor_map.keys()))
+
+        if selected_actor:
+            person_id = actor_map[selected_actor]
+            with st.spinner(f"{selected_actor}의 출연작을 찾는 중..."):
+                credits_list = tmdb_get_person_movie_credits(person_id, tmdb_api_key)
+
+            if not credits_list:
+                st.info(f"TMDb에서 {selected_actor}의 다른 출연작을 찾지 못했습니다.")
+            else:
+                st.write(f"**{selected_actor}**의 다른 출연작 추천")
+                credit_cols = st.columns(len(credits_list))
+                for col, movie in zip(credit_cols, credits_list):
+                    poster_path = movie.get("poster_path")
+                    movie_title = movie.get("title") or movie.get("original_title") or "제목 미상"
+                    release_date = movie.get("release_date", "")
+                    release_year = release_date[:4] if release_date else "?"
+                    with col:
+                        if poster_path:
+                            st.image(f"https://image.tmdb.org/t/p/w200{poster_path}")
+                        else:
+                            st.write("🎬 포스터 없음")
+                        st.caption(f"{movie_title} ({release_year})")
