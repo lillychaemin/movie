@@ -9,13 +9,13 @@ st.caption("물리 개념에 대해 궁금한 점이 있다면 무엇이든 물�
 
 # 1. API 키 불러오기 및 클라이언트 초기화
 # Streamlit 비밀 금고(secrets)에서 GEMINI_API_KEY를 안전하게 가져옵니다.
-api_key = st.secrets.get("GEMINI_API_KEY")
+api_key = st.secrets.get("CLAUDE_API_KEY")
 
 if not api_key:
-    st.info("API 키 설정이 필요합니다. `.streamlit/secrets.toml` 파일에 GEMINI_API_KEY를 추가해 주세요.")
+    st.info("API 키 설정이 필요합니다. `.streamlit/secrets.toml` 파일에 CLAUDE_API_KEY를 추가해 주세요.")
     st.stop()
 
-# OpenAI 라이브러리를 사용해 Gemini OpenAI 호환 API 주소로 연결합니다.
+# OpenAI 라이브러리를 사용해 Claude OpenAI 호환 API 주소로 연결합니다.
 client = OpenAI(
     api_key=api_key,
     base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
